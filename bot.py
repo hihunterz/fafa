@@ -1,143 +1,237 @@
-
-import asyncio
-import asyncpg
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters.text import Text
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-
 import os
+import asyncio
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import CommandStart
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-API_TOKEN = os.getenv("API_TOKEN")
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy import Column, Integer, String, Float, Text, select, update
+
+# ===== Настройки =====
+TOKEN = os.getenv("API_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-bot = Bot(token=API_TOKEN)
+bot = Bot(TOKEN)
 dp = Dispatcher()
 
-# Главное меню
-main_menu = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton("🔎 Найти объявления")],
-        [KeyboardButton("➕ Разместить объявление")],
-        [KeyboardButton("👤 Профиль")]
-    ],
-    resize_keyboard=True
-)
+# ===== PostgreSQL и ORM =====
+Base = declarative_base()
+engine = create_async_engine(DATABASE_URL, echo=False)
+async_session = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
-# Inline‑кнопки
-inline_start = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton("🔎 Найти объявления", callback_data="find_ads")],
-    [InlineKeyboardButton("➕ Разместить объявление", callback_data="create_ad")],
-    [InlineKeyboardButton("👤 Профиль", callback_data="profile")]
-])
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(Integer, unique=True)
+    username = Column(String(100))
+    name = Column(String(100))
+    rating = Column(Float, default=0)
+    reviews_count = Column(Integer, default=0)
 
-# Сессии пользователей
-user_sessions = {}
+class Ad(Base):
+    __tablename__ = "ads"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer)
+    title = Column(String(200))
+    description = Column(Text)
+    price = Column(String(50))
+    status = Column(String(20), default="open")
 
-# Подключение к базе
-async def create_db_pool():
-    return await asyncpg.create_pool(DATABASE_URL)
+class Response(Base):
+    __tablename__ = "responses"
+    id = Column(Integer, primary_key=True)
+    ad_id = Column(Integer)
+    responder_id = Column(Integer)
+    message = Column(Text)
 
-db_pool = None
+class Review(Base):
+    __tablename__ = "reviews"
+    id = Column(Integer, primary_key=True)
+    from_user = Column(Integer)
+    to_user = Column(Integer)
+    rating = Column(Integer)
+    comment = Column(Text)
 
-# Старт
+user_state = {}
+
+# ===== Инициализация базы =====
+async def init_db():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+# ===== /start =====
 @dp.message(CommandStart())
 async def start(message: types.Message):
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO users (telegram_id, username, name)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (telegram_id) DO NOTHING
-        """, message.from_user.id, message.from_user.username, message.from_user.full_name)
-    await message.answer("Добро пожаловать на Биржу Объявлений!", reply_markup=main_menu)
-    await message.answer("Выберите действие:", reply_markup=inline_start)
+    async with async_session() as session:
+        result = await session.execute(select(User).where(User.telegram_id == message.from_user.id))
+        user = result.scalar()
+        if not user:
+            user = User(
+                telegram_id=message.from_user.id,
+                username=message.from_user.username,
+                name=message.from_user.full_name
+            )
+            session.add(user)
+            await session.commit()
 
-# ➕ Разместить объявление
-@dp.message(Text("➕ Разместить объявление"))
-async def ask_type(message: types.Message):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton("📌 Заказ", callback_data="type_order")],
-        [InlineKeyboardButton("🧑‍💻 Услуга", callback_data="type_service")]
+        [InlineKeyboardButton(text="➕ Разместить объявление", callback_data="create_ad")],
+        [InlineKeyboardButton(text="📋 Все объявления", callback_data="all_ads")],
+        [InlineKeyboardButton(text="👤 Профиль", callback_data="profile")]
     ])
-    await message.answer("Что хотите разместить?", reply_markup=keyboard)
+    await message.answer("Добро пожаловать на биржу объявлений 🚀", reply_markup=keyboard)
 
-# Обработка inline
-@dp.callback_query()
-async def callback_handler(query: types.CallbackQuery):
-    uid = query.from_user.id
-    async with db_pool.acquire() as conn:
-        if query.data == "profile":
-            user = await conn.fetchrow("SELECT * FROM users WHERE telegram_id=$1", uid)
-            await bot.send_message(uid,
-                f"👤 Профиль:\nИмя: {user['name']}\nРейтинг: {user['rating']} ({user['reviews_count']} отзывов)")
-            await query.answer()
-            return
+# ===== Создание объявления =====
+@dp.callback_query(lambda c: c.data=="create_ad")
+async def create_ad(cb: types.CallbackQuery):
+    user_state[cb.from_user.id] = {"step":"title"}
+    await cb.message.answer("Введите заголовок объявления")
 
-        if query.data == "find_ads":
-            ads = await conn.fetch("SELECT * FROM ads WHERE status='active'")
-            if not ads:
-                await bot.send_message(uid, "Объявлений пока нет.")
-            else:
-                for ad in ads:
-                    await bot.send_message(uid,
-                        f"📌 {ad['title']}\n{ad['description']}\n💰 {ad['price']}\nКатегория: {ad['category']}")
-            await query.answer()
-            return
-
-        if query.data in ["type_order", "type_service"]:
-            ad_type = "order" if query.data=="type_order" else "service"
-            user_sessions[uid] = {"type": ad_type}
-            await bot.send_message(uid, "Введите категорию (например: Дизайн, IT, Маркетинг):")
-            await query.answer()
-
-# Сбор данных объявления
 @dp.message()
-async def collect_ad_data(message: types.Message):
-    uid = message.from_user.id
-    if uid not in user_sessions:
+async def process_state(message: types.Message):
+    if message.from_user.id not in user_state:
         return
-    session = user_sessions[uid]
+    state = user_state[message.from_user.id]
 
-    if "category" not in session:
-        session["category"] = message.text
-        await message.answer("Введите заголовок:")
-    elif "title" not in session:
-        session["title"] = message.text
-        await message.answer("Введите описание:")
-    elif "description" not in session:
-        session["description"] = message.text
-        await message.answer("Введите цену (например: 5000 ₽):")
-    else:
-        session["price"] = message.text
-        # Сохраняем в базу
-        async with db_pool.acquire() as conn:
-            row = await conn.fetchrow("""
-                INSERT INTO ads (user_id, type, category, title, description, price, status)
-                VALUES ((SELECT id FROM users WHERE telegram_id=$1), $2, $3, $4, $5, $6, 'active')
-                RETURNING id
-            """, uid, session["type"], session["category"], session["title"], session["description"], session["price"])
-            ad_id = row["id"]
-        # Публикация в канал
-        await bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=(
-                f"📌 *{session['title']}*\n"
-                f"📝 {session['description']}\n"
-                f"💰 {session['price']}\n"
-                f"📂 {session['category']}\n"
-                f"👤 Автор: {message.from_user.full_name}\n"
-                f"🗂 Тип: {session['type']}"
-            ),
-            parse_mode="Markdown"
+    async with async_session() as session:
+        if state["step"]=="title":
+            state["title"] = message.text
+            state["step"] = "desc"
+            await message.answer("Введите описание")
+            return
+
+        if state["step"]=="desc":
+            state["desc"] = message.text
+            state["step"] = "price"
+            await message.answer("Введите цену")
+            return
+
+        if state["step"]=="price":
+            ad = Ad(
+                user_id=message.from_user.id,
+                title=state["title"],
+                description=state["desc"],
+                price=message.text
+            )
+            session.add(ad)
+            await session.commit()
+
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💬 Откликнуться", callback_data=f"respond_{ad.id}")]
+            ])
+
+            text = f"📢 {ad.title}\n\n{ad.description}\n\n💰 {ad.price}"
+            await bot.send_message(CHANNEL_ID, text, reply_markup=keyboard)
+            await message.answer("Объявление опубликовано в канале ✅")
+            user_state.pop(message.from_user.id)
+
+# ===== Просмотр всех объявлений =====
+@dp.callback_query(lambda c: c.data=="all_ads")
+async def all_ads(cb: types.CallbackQuery):
+    async with async_session() as session:
+        result = await session.execute(
+            select(Ad, User.username).join(User, User.telegram_id==Ad.user_id).where(Ad.status=="open")
         )
-        await message.answer("✅ Объявление опубликовано в канале!")
-        user_sessions.pop(uid)
+        rows = result.all()
 
-# Запуск
+    if not rows:
+        await cb.message.answer("Нет объявлений")
+        return
+
+    text = "📋 Объявления:\n\n"
+    for ad, username in rows:
+        text += f"{ad.id} | @{username} | {ad.title} | {ad.price}\n"
+    await cb.message.answer(text)
+
+# ===== Отклики =====
+@dp.callback_query(lambda c: c.data.startswith("respond_"))
+async def respond(cb: types.CallbackQuery):
+    ad_id=int(cb.data.split("_")[1])
+    user_state[cb.from_user.id]={"step":"respond","ad":ad_id}
+    await cb.message.answer("Напишите ваше предложение")
+
+@dp.message()
+async def process_response(message: types.Message):
+    if message.from_user.id not in user_state:
+        return
+    state=user_state[message.from_user.id]
+    if state["step"]!="respond":
+        return
+    ad_id=state["ad"]
+    async with async_session() as session:
+        response = Response(ad_id=ad_id, responder_id=message.from_user.id, message=message.text)
+        session.add(response)
+        await session.commit()
+        # Отправка владельцу объявления
+        result = await session.execute(select(Ad).where(Ad.id==ad_id))
+        ad = result.scalar()
+        if ad:
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🤝 Принять", callback_data=f"deal_{ad_id}_{message.from_user.id}")]
+            ])
+            await bot.send_message(ad.user_id, f"Отклик на '{ad.title}':\n\n{message.text}", reply_markup=keyboard)
+    await message.answer("Отклик отправлен")
+    user_state.pop(message.from_user.id)
+
+# ===== Сделка =====
+@dp.callback_query(lambda c: c.data.startswith("deal_"))
+async def deal(cb: types.CallbackQuery):
+    parts = cb.data.split("_")
+    ad_id = int(parts[1])
+    freelancer = int(parts[2])
+    async with async_session() as session:
+        await session.execute(update(Ad).where(Ad.id==ad_id).values(status="closed"))
+        await session.commit()
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"review_{freelancer}")]
+    ])
+    await bot.send_message(cb.from_user.id,"Сделка завершена",reply_markup=keyboard)
+
+# ===== Отзыв =====
+@dp.callback_query(lambda c: c.data.startswith("review_"))
+async def review(cb: types.CallbackQuery):
+    user_state[cb.from_user.id]={"step":"rating","target":int(cb.data.split("_")[1])}
+    await cb.message.answer("Оцените исполнителя от 1 до 5")
+
+@dp.message()
+async def rating(message: types.Message):
+    if message.from_user.id not in user_state:
+        return
+    state = user_state[message.from_user.id]
+    if state["step"]!="rating":
+        return
+    rating_value = int(message.text)
+    target = state["target"]
+    async with async_session() as session:
+        review = Review(from_user=message.from_user.id, to_user=target, rating=rating_value, comment="")
+        session.add(review)
+        # Обновляем рейтинг
+        result = await session.execute(select(User).where(User.telegram_id==target))
+        user = result.scalar()
+        if user:
+            new_rating = ((user.rating*user.reviews_count)+rating_value)/(user.reviews_count+1)
+            user.rating=new_rating
+            user.reviews_count+=1
+            session.add(user)
+        await session.commit()
+    await message.answer("Спасибо за отзыв ⭐")
+    user_state.pop(message.from_user.id)
+
+# ===== Профиль =====
+@dp.callback_query(lambda c: c.data=="profile")
+async def profile(cb: types.CallbackQuery):
+    async with async_session() as session:
+        result = await session.execute(select(User).where(User.telegram_id==cb.from_user.id))
+        user = result.scalar()
+    if user:
+        await cb.message.answer(f"👤 Профиль\n⭐ Рейтинг: {user.rating:.2f}\nОтзывы: {user.reviews_count}")
+
+# ===== Запуск бота =====
 async def main():
-    global db_pool
-    db_pool = await create_db_pool()
+    await init_db()
     await dp.start_polling(bot)
 
-if __name__ == "__main__":
+if __name__=="__main__":
     asyncio.run(main())
