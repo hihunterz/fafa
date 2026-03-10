@@ -6,11 +6,12 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy import Column, Integer, String, Float, Text, select, update
+from sqlalchemy import Column, Integer, String, Float, Text, select
 
-TOKEN = os.getenv("API_TOKEN")
-CHANNEL_ID = os.getenv("CHANNEL_ID")
-DATABASE_URL = os.getenv("DATABASE_URL")
+# ===== Настройки =====
+TOKEN = os.getenv("API_TOKEN")  # Telegram Bot Token
+CHANNEL_ID = os.getenv("CHANNEL_ID")  # канал для публикаций
+DATABASE_URL = "sqlite+aiosqlite:///./freelance_db.sqlite"  # локальный SQLite
 
 bot = Bot(TOKEN)
 dp = Dispatcher()
@@ -19,7 +20,7 @@ Base = declarative_base()
 engine = create_async_engine(DATABASE_URL, echo=False)
 async_session = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
-# ===== Модели базы =====
+# ===== Модели =====
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True)
@@ -46,7 +47,7 @@ class Response(Base):
     message = Column(Text)
 
 class Review(Base):
-    __tablename__ = "reviews"]
+    __tablename__ = "reviews"
     id = Column(Integer, primary_key=True)
     from_user = Column(Integer)
     to_user = Column(Integer)
@@ -64,7 +65,7 @@ async def init_db():
 @dp.message(CommandStart())
 async def start(message: types.Message):
     async with async_session() as session:
-        result = await session.execute(select(User).where(User.telegram_id==message.from_user.id))
+        result = await session.execute(select(User).where(User.telegram_id == message.from_user.id))
         user = result.scalar()
         if not user:
             user = User(
@@ -83,12 +84,12 @@ async def start(message: types.Message):
     await message.answer("Добро пожаловать на биржу объявлений 🚀", reply_markup=keyboard)
 
 # ===== Остальной функционал =====
-# Здесь реализуем все: создание объявлений, отклики, сделки, отзывы, профиль
-# Логика полностью как в предыдущем примере
+# Можно добавить обработку callback_data для создания объявлений,
+# просмотра всех объявлений, откликов, рейтинга и профиля
 
 async def main():
     await init_db()
     await dp.start_polling(bot)
 
-if __name__=="__main__":
+if __name__ == "__main__":
     asyncio.run(main())
