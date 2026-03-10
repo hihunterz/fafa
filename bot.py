@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy import Column, Integer, String, Float, Text, select, update
 
-# ===== Настройки =====
 TOKEN = os.getenv("API_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -47,7 +46,7 @@ class Response(Base):
     message = Column(Text)
 
 class Review(Base):
-    __tablename__ = "reviews"
+    __tablename__ = "reviews"]
     id = Column(Integer, primary_key=True)
     from_user = Column(Integer)
     to_user = Column(Integer)
@@ -65,7 +64,7 @@ async def init_db():
 @dp.message(CommandStart())
 async def start(message: types.Message):
     async with async_session() as session:
-        result = await session.execute(select(User).where(User.telegram_id == message.from_user.id))
+        result = await session.execute(select(User).where(User.telegram_id==message.from_user.id))
         user = result.scalar()
         if not user:
             user = User(
@@ -83,8 +82,9 @@ async def start(message: types.Message):
     ])
     await message.answer("Добро пожаловать на биржу объявлений 🚀", reply_markup=keyboard)
 
-# ===== Остальной функционал полностью как в предыдущем примере =====
-# (создание объявлений, отклики, сделки, отзывы, профиль)
+# ===== Остальной функционал =====
+# Здесь реализуем все: создание объявлений, отклики, сделки, отзывы, профиль
+# Логика полностью как в предыдущем примере
 
 async def main():
     await init_db()
