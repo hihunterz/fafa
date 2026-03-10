@@ -5,9 +5,11 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters.text import Text
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
-API_TOKEN = "8543524395:AAEZqCcDrdpg9JsgLBHPU-Dtjz4B5cE4IBc"
-CHANNEL_ID = "@freelamarket"
-DATABASE_URL = "postgresql://freelance_db_rv9t_user:TTndhvwBvVWQZoJeJ9eo8mtfi38UASk0@dpg-d6o5ern5gffc73e0g880-a/freelance_db_rv9t"
+import os
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+API_TOKEN = os.getenv("API_TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
